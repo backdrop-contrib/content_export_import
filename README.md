@@ -14,6 +14,12 @@ the `Configuration` menu item in the admin bar.
   you would like to export and then creates a json file that is downloaded to
   your computer.
 
+This module will work best when moving all nodes of a specific content type into
+another site, where no nodes of the same content type exist. However, it can be 
+also be used to add content to an existing content type as long as fields 
+align properly. We recommend testing this module on a development site before using
+on a production site.
+
 This module is still in development, we welcome testing and reporting of bugs or
 feature requests in the issue queue. In our testing the module works fairly well
 in the following controlled experiment. 
