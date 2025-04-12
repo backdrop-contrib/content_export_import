@@ -1,0 +1,4 @@
+name = Content Export Import
+description = CEI allows you to import and export content from your site.
+backdrop = 1.x
+type = module
