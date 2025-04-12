@@ -1,6 +1,7 @@
 Content Export Import
 ----
-Content Export Import allows you to export content from one Backdrop site to another. It provides
+Content Export Import (formerly know as [BIEN](https://github.com/backdrop-contrib/bien)) 
+allows you to export content from one Backdrop site to another. It provides
 an Import form and an Export form. It places menu items for these to forms under
 the `Configuration` menu item in the admin bar.
 
