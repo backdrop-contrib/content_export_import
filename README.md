@@ -53,4 +53,4 @@ Current Maintainers
 Other Credits
 -------------
 
-* Ideal and initial work on this module by: Geoff St. Pierre [serundeputy](https://github.com/serundeputy).
+* Ideal and initial work on this module (formerly known as BIEN) by: Geoff St. Pierre [serundeputy](https://github.com/serundeputy).
