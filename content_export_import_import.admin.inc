@@ -202,7 +202,13 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
   }
 
   // Check if this is a new format export with content types
+  $comments_to_import = array();
   if (isset($content['content_types']) && isset($content['nodes'])) {
+    // Store comments data for later import (after nodes are imported)
+    if (isset($content['comments']) && is_array($content['comments'])) {
+      $comments_to_import = $content['comments'];
+    }
+    
     // First import taxonomy vocabularies and terms
     if (isset($content['taxonomy'])) {
       // Create a mapping of old term IDs to new term IDs
@@ -380,8 +386,60 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
           field_create_instance($uuid_instance);
         }
 
+        // Ensure comment_body field is created for this content type (if comment module is enabled)
+        // This is normally done by hook_node_type_insert(), but we need to do it manually
+        if (module_exists('comment') && function_exists('_comment_body_field_create')) {
+          // Reload the content type to ensure it's fully saved
+          $content_type = node_type_get_type($type);
+          if ($content_type) {
+            _comment_body_field_create($content_type);
+          }
+        }
+        
+        // Import comment settings for this content type (if comment module is enabled)
+        if (module_exists('comment') && isset($type_data['comment_settings']) && is_array($type_data['comment_settings'])) {
+          // Reload the content type to get the full object with settings
+          $content_type = node_type_get_type($type);
+          if ($content_type) {
+            // Initialize settings array if it doesn't exist
+            if (!isset($content_type->settings) || !is_array($content_type->settings)) {
+              $content_type->settings = array();
+            }
+            // Merge comment settings
+            $content_type->settings = array_merge($content_type->settings, $type_data['comment_settings']);
+            node_type_save($content_type);
+            backdrop_set_message(t('Imported comment settings for content type: @type', array('@type' => $content_type->name)));
+          }
+        }
+
         // Clear the menu cache to make the new content type available
         menu_rebuild();
+      }
+      else {
+        // Content type already exists, but we should still ensure comment_body field exists
+        // and import comment settings if they exist
+        if (module_exists('comment')) {
+          $content_type = node_type_get_type($type);
+          if ($content_type && function_exists('_comment_body_field_create')) {
+            // Ensure comment_body field is created for this content type
+            _comment_body_field_create($content_type);
+          }
+          
+          // Import comment settings if they exist
+          if (isset($type_data['comment_settings']) && is_array($type_data['comment_settings'])) {
+            $content_type = node_type_get_type($type);
+            if ($content_type) {
+              // Initialize settings array if it doesn't exist
+              if (!isset($content_type->settings) || !is_array($content_type->settings)) {
+                $content_type->settings = array();
+              }
+              // Merge comment settings
+              $content_type->settings = array_merge($content_type->settings, $type_data['comment_settings']);
+              node_type_save($content_type);
+              backdrop_set_message(t('Updated comment settings for content type: @type', array('@type' => $content_type->name)));
+            }
+          }
+        }
       }
     }
 
@@ -584,21 +642,197 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
     }
   }
 
+  // Import comments after nodes are imported (if comment module is enabled)
+  $comment_count = 0;
+  $comment_skipped_count = 0;
+  if (module_exists('comment') && !empty($comments_to_import)) {
+    // Create a mapping of comment UUIDs to new CIDs
+    $comment_uuid_to_cid = array();
+    // Create a mapping of old CIDs to new CIDs (for parent relationships)
+    $old_cid_to_new_cid = array();
+    
+    // First pass: Import top-level comments (those without parents or with parent = 0)
+    foreach ($comments_to_import as $node_uuid => $comments) {
+      // Find the new node ID for this UUID
+      if (!isset($uuid_to_nid[$node_uuid]) || !$uuid_to_nid[$node_uuid]) {
+        continue; // Skip if node wasn't imported
+      }
+      $new_nid = $uuid_to_nid[$node_uuid];
+      
+      foreach ($comments as $comment_data) {
+        // Skip if comment already exists (by UUID)
+        if (isset($comment_data['uuid']) && isset($comment_uuid_to_cid[$comment_data['uuid']])) {
+          $comment_skipped_count++;
+          continue;
+        }
+        
+        // Only import top-level comments in first pass
+        if (isset($comment_data['pid']) && $comment_data['pid'] != 0) {
+          continue;
+        }
+        
+        // Create a new comment
+        $comment = entity_create('comment', array(
+          'nid' => $new_nid,
+          'pid' => 0,
+          'subject' => isset($comment_data['subject']) ? $comment_data['subject'] : '',
+          'uid' => isset($comment_data['uid']) ? $comment_data['uid'] : $GLOBALS['user']->uid,
+          'name' => isset($comment_data['name']) ? $comment_data['name'] : '',
+          'mail' => isset($comment_data['mail']) ? $comment_data['mail'] : '',
+          'homepage' => isset($comment_data['homepage']) ? $comment_data['homepage'] : '',
+          'status' => isset($comment_data['status']) ? $comment_data['status'] : COMMENT_PUBLISHED,
+          'created' => isset($comment_data['created']) ? $comment_data['created'] : REQUEST_TIME,
+          'changed' => isset($comment_data['changed']) ? $comment_data['changed'] : REQUEST_TIME,
+        ));
+        
+        // Copy other properties, especially comment_body field
+        foreach ($comment_data as $key => $value) {
+          if (!in_array($key, array('cid', 'nid', 'pid', 'uuid'))) {
+            // Handle comment body field - it's a field, so copy it directly
+            if ($key === 'comment_body') {
+              $comment->$key = $value;
+            }
+            // Handle other field data (arrays with language keys)
+            elseif (is_array($value) && (isset($value[LANGUAGE_NONE]) || isset($value['und']))) {
+              $comment->$key = $value;
+            }
+            // Skip system properties that are already set
+            elseif (!in_array($key, array('subject', 'uid', 'name', 'mail', 'homepage', 'status', 'created', 'changed', 'thread', 'node_type', 'registered_name'))) {
+              $comment->$key = $value;
+            }
+          }
+        }
+        
+        try {
+          $comment->save();
+          $comment_count++;
+          
+          // Store mappings
+          if (isset($comment_data['uuid'])) {
+            $comment_uuid_to_cid[$comment_data['uuid']] = $comment->cid;
+          }
+          if (isset($comment_data['cid'])) {
+            $old_cid_to_new_cid[$comment_data['cid']] = $comment->cid;
+          }
+        }
+        catch (Exception $e) {
+          backdrop_set_message(t('Error saving comment: @error', array('@error' => $e->getMessage())), 'error');
+        }
+      }
+    }
+    
+    // Second pass: Import replies (comments with parents)
+    // We need to iterate multiple times to handle nested replies
+    $max_iterations = 10; // Prevent infinite loops
+    $iteration = 0;
+    $comments_remaining = TRUE;
+    
+    while ($comments_remaining && $iteration < $max_iterations) {
+      $iteration++;
+      $comments_remaining = FALSE;
+      
+      foreach ($comments_to_import as $node_uuid => $comments) {
+        // Find the new node ID for this UUID
+        if (!isset($uuid_to_nid[$node_uuid]) || !$uuid_to_nid[$node_uuid]) {
+          continue;
+        }
+        $new_nid = $uuid_to_nid[$node_uuid];
+        
+        foreach ($comments as $comment_data) {
+          // Skip if already imported
+          if (isset($comment_data['uuid']) && isset($comment_uuid_to_cid[$comment_data['uuid']])) {
+            continue;
+          }
+          
+          // Skip if no parent or parent is 0 (already handled in first pass)
+          if (!isset($comment_data['pid']) || $comment_data['pid'] == 0) {
+            continue;
+          }
+          
+          // Check if parent comment has been imported
+          $new_pid = 0;
+          if (isset($old_cid_to_new_cid[$comment_data['pid']])) {
+            $new_pid = $old_cid_to_new_cid[$comment_data['pid']];
+          }
+          else {
+            // Parent not yet imported, skip for now
+            $comments_remaining = TRUE;
+            continue;
+          }
+          
+          // Create a new comment
+          $comment = entity_create('comment', array(
+            'nid' => $new_nid,
+            'pid' => $new_pid,
+            'subject' => isset($comment_data['subject']) ? $comment_data['subject'] : '',
+            'uid' => isset($comment_data['uid']) ? $comment_data['uid'] : $GLOBALS['user']->uid,
+            'name' => isset($comment_data['name']) ? $comment_data['name'] : '',
+            'mail' => isset($comment_data['mail']) ? $comment_data['mail'] : '',
+            'homepage' => isset($comment_data['homepage']) ? $comment_data['homepage'] : '',
+            'status' => isset($comment_data['status']) ? $comment_data['status'] : COMMENT_PUBLISHED,
+            'created' => isset($comment_data['created']) ? $comment_data['created'] : REQUEST_TIME,
+            'changed' => isset($comment_data['changed']) ? $comment_data['changed'] : REQUEST_TIME,
+          ));
+          
+          // Copy other properties, especially comment_body field
+          foreach ($comment_data as $key => $value) {
+            if (!in_array($key, array('cid', 'nid', 'pid', 'uuid'))) {
+              // Handle comment body field - it's a field, so copy it directly
+              if ($key === 'comment_body') {
+                $comment->$key = $value;
+              }
+              // Handle other field data (arrays with language keys)
+              elseif (is_array($value) && (isset($value[LANGUAGE_NONE]) || isset($value['und']))) {
+                $comment->$key = $value;
+              }
+              // Skip system properties that are already set
+              elseif (!in_array($key, array('subject', 'uid', 'name', 'mail', 'homepage', 'status', 'created', 'changed', 'thread', 'node_type', 'registered_name'))) {
+                $comment->$key = $value;
+              }
+            }
+          }
+          
+          try {
+            $comment->save();
+            $comment_count++;
+            
+            // Store mappings
+            if (isset($comment_data['uuid'])) {
+              $comment_uuid_to_cid[$comment_data['uuid']] = $comment->cid;
+            }
+            if (isset($comment_data['cid'])) {
+              $old_cid_to_new_cid[$comment_data['cid']] = $comment->cid;
+            }
+          }
+          catch (Exception $e) {
+            backdrop_set_message(t('Error saving comment: @error', array('@error' => $e->getMessage())), 'error');
+          }
+        }
+      }
+    }
+    
+    if ($comment_count > 0) {
+      backdrop_set_message(t('Imported @count comments.', array('@count' => $comment_count)));
+    }
+  }
+
   // Clean up temporary directory
   file_unmanaged_delete_recursive($temp_dir);
 
   // Give a message to the user.
-  backdrop_set_message(
-    t(
-      'Import completed successfully. @node_count new nodes were imported (@skipped_count skipped as duplicates) with @file_count associated files. Visit the <a href="@content_url">content listing</a> to view the imported content.',
-      array(
-        '@node_count' => $node_count,
-        '@skipped_count' => $skipped_count,
-        '@file_count' => count($form_state['storage']['file_map']),
-        '@content_url' => url('admin/content')
-      )
+  $message = t(
+    'Import completed successfully. @node_count new nodes were imported (@skipped_count skipped as duplicates) with @file_count associated files.',
+    array(
+      '@node_count' => $node_count,
+      '@skipped_count' => $skipped_count,
+      '@file_count' => count($form_state['storage']['file_map']),
     )
   );
+  if (isset($comment_count) && $comment_count > 0) {
+    $message .= ' ' . t('@comment_count comments were imported.', array('@comment_count' => $comment_count));
+  }
+  $message .= ' ' . t('Visit the <a href="@content_url">content listing</a> to view the imported content.', array('@content_url' => url('admin/content')));
+  backdrop_set_message($message);
 }
 
 /**

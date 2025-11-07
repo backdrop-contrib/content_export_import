@@ -153,6 +153,26 @@ function content_export_import_export_settings_submit(array $form, array &$form_
         }
       }
       $export_data['content_types'][$type]['field_configs'] = $field_configs;
+
+      // Export comment settings for this content type (if comment module is enabled)
+      if (module_exists('comment') && isset($content_type->settings) && is_array($content_type->settings)) {
+        $comment_settings = array();
+        if (isset($content_type->settings['comment_default'])) {
+          $comment_settings['comment_default'] = $content_type->settings['comment_default'];
+        }
+        if (isset($content_type->settings['comment_per_page'])) {
+          $comment_settings['comment_per_page'] = $content_type->settings['comment_per_page'];
+        }
+        if (isset($content_type->settings['comment_mode'])) {
+          $comment_settings['comment_mode'] = $content_type->settings['comment_mode'];
+        }
+        if (isset($content_type->settings['comment_form_location'])) {
+          $comment_settings['comment_form_location'] = $content_type->settings['comment_form_location'];
+        }
+        if (!empty($comment_settings)) {
+          $export_data['content_types'][$type]['comment_settings'] = $comment_settings;
+        }
+      }
     }
   }
 
@@ -180,6 +200,38 @@ function content_export_import_export_settings_submit(array $form, array &$form_
   }
   
   $export_data['nodes'] = $nodes;
+
+  // Export comments for all nodes (if comment module is enabled)
+  $export_data['comments'] = array();
+  if (module_exists('comment')) {
+    foreach ($nodes as $node) {
+      // Load all comments for this node (including unpublished)
+      $query = db_select('comment', 'c')
+        ->fields('c', array('cid'))
+        ->condition('c.nid', $node->nid)
+        ->orderBy('c.cid', 'ASC');
+      $result = $query->execute();
+      $cids = array();
+      foreach ($result as $row) {
+        $cids[] = $row->cid;
+      }
+      
+      if (!empty($cids)) {
+        $comments = comment_load_multiple($cids);
+        // Add UUIDs to comments if they don't have them
+        foreach ($comments as $comment) {
+          if (!isset($comment->uuid)) {
+            $comment->uuid = $uuid->generate();
+          }
+          // Store comments keyed by node UUID for easier import
+          if (!isset($export_data['comments'][$node->uuid])) {
+            $export_data['comments'][$node->uuid] = array();
+          }
+          $export_data['comments'][$node->uuid][] = $comment;
+        }
+      }
+    }
+  }
 
   // Create a temporary directory for the export
   $temp_dir = 'temporary://content_export_import_export_' . time();
