@@ -241,13 +241,26 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
         // Create a mapping of old term IDs to new term IDs
         $term_id_map = array();
         $term_count = 0;
-        
+        $term_skipped_count = 0;
+
         // First pass: Create all terms without parents
         foreach ($content['taxonomy']['terms'] as $vocabulary_machine_name => $terms) {
           foreach ($terms as $old_tid => $term_data) {
             if (!isset($term_data['parent']) || $term_data['parent'] == 0) {
               $vocabulary = taxonomy_vocabulary_machine_name_load($vocabulary_machine_name);
               if ($vocabulary) {
+                // Check if a term with this name already exists in the vocabulary.
+                $existing = taxonomy_term_load_multiple(array(), array(
+                  'name' => $term_data['name'],
+                  'vocabulary' => $vocabulary_machine_name,
+                ));
+                if (!empty($existing)) {
+                  $existing_term = reset($existing);
+                  $term_id_map[$old_tid] = $existing_term->tid;
+                  $term_skipped_count++;
+                  continue;
+                }
+
                 $term = new TaxonomyTerm();
                 $term->name = $term_data['name'];
                 $term->description = $term_data['description'];
@@ -272,6 +285,18 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
             if (isset($term_data['parent']) && $term_data['parent'] != 0 && !isset($term_id_map[$old_tid])) {
               $vocabulary = taxonomy_vocabulary_machine_name_load($vocabulary_machine_name);
               if ($vocabulary) {
+                // Check if a term with this name already exists in the vocabulary.
+                $existing = taxonomy_term_load_multiple(array(), array(
+                  'name' => $term_data['name'],
+                  'vocabulary' => $vocabulary_machine_name,
+                ));
+                if (!empty($existing)) {
+                  $existing_term = reset($existing);
+                  $term_id_map[$old_tid] = $existing_term->tid;
+                  $term_skipped_count++;
+                  continue;
+                }
+
                 $term = new TaxonomyTerm();
                 $term->name = $term_data['name'];
                 $term->description = $term_data['description'];
@@ -289,9 +314,12 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
             }
           }
         }
-        
+
         if ($term_count > 0) {
           backdrop_set_message(t('Created @count new taxonomy terms.', array('@count' => $term_count)));
+        }
+        if ($term_skipped_count > 0) {
+          backdrop_set_message(t('@count taxonomy terms were not imported because they already exist.', array('@count' => $term_skipped_count)));
         }
       }
     }
@@ -498,6 +526,7 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
   // Second pass: Import nodes and update the mapping
   $node_count = 0;
   $skipped_count = 0;
+  $duplicate_titles = array();
   foreach ($content as $c) {
     if(isset($c['nid'])) {
       unset($c['nid']);
@@ -516,6 +545,21 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
     if (!isset($c['type']) || !node_type_get_type($c['type'])) {
       backdrop_set_message(t('Skipping node: Content type @type does not exist.', array('@type' => isset($c['type']) ? $c['type'] : 'undefined')), 'error');
       continue;
+    }
+
+    // Check if a node with the same title and type already exists. The node
+    // will still be imported, but the user will be warned.
+    if (!empty($c['title'])) {
+      $existing_title = db_select('node', 'n')
+        ->fields('n', array('nid'))
+        ->condition('n.title', $c['title'])
+        ->condition('n.type', $c['type'])
+        ->range(0, 1)
+        ->execute()
+        ->fetchField();
+      if ($existing_title) {
+        $duplicate_titles[] = check_plain($c['title']);
+      }
     }
 
     // Create a new node using the proper Node class
@@ -680,6 +724,14 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
     catch (Exception $e) {
       backdrop_set_message(t('Error saving node: @error', array('@error' => $e->getMessage())), 'error');
     }
+  }
+
+  // Warn about nodes that were imported despite a node with the same title existing.
+  if (!empty($duplicate_titles)) {
+    backdrop_set_message(t('The following @count node(s) were imported, but a node with the same title already exists: !titles', array(
+      '@count' => count($duplicate_titles),
+      '!titles' => '<ul><li>' . implode('</li><li>', $duplicate_titles) . '</li></ul>',
+    )), 'warning');
   }
 
   // Import comments after nodes are imported (if comment module is enabled)
