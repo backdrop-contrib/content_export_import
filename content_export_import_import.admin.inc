@@ -416,8 +416,48 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
         menu_rebuild();
       }
       else {
-        // Content type already exists, but we should still ensure comment_body field exists
-        // and import comment settings if they exist
+        // Content type already exists, but we should still ensure field_uuid exists,
+        // comment_body field exists, and import comment settings if they exist.
+
+        // Ensure field_uuid field exists.
+        if (!field_info_field('field_uuid')) {
+          $uuid_field = array(
+            'field_name' => 'field_uuid',
+            'type' => 'text',
+            'cardinality' => 1,
+            'locked' => TRUE,
+            'settings' => array(
+              'max_length' => 36,
+            ),
+          );
+          field_create_field($uuid_field);
+        }
+
+        // Ensure field_uuid instance exists for this content type.
+        if (!field_info_instance('node', 'field_uuid', $type)) {
+          $uuid_instance = array(
+            'field_name' => 'field_uuid',
+            'entity_type' => 'node',
+            'bundle' => $type,
+            'label' => 'UUID',
+            'description' => 'Unique identifier for this content',
+            'required' => FALSE,
+            'widget' => array(
+              'type' => 'text_textfield',
+              'settings' => array(
+                'size' => 60,
+              ),
+            ),
+            'display' => array(
+              'default' => array(
+                'label' => 'above',
+                'type' => 'text_default',
+              ),
+            ),
+          );
+          field_create_instance($uuid_instance);
+        }
+
         if (module_exists('comment')) {
           $content_type = node_type_get_type($type);
           if ($content_type && function_exists('_comment_body_field_create')) {
