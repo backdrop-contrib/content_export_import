@@ -254,12 +254,19 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
     }
   }
 
+  // Keep a reference to the full content data for dry run type validation.
+  $content_data = $content;
   // Check if this is a new format export with content types
   $comments_to_import = array();
   if (isset($content['content_types']) && isset($content['nodes'])) {
     // Store comments data for later import (after nodes are imported)
     if (isset($content['comments']) && is_array($content['comments'])) {
       $comments_to_import = $content['comments'];
+      // Enable the comment module if comments are present and it is not active.
+      if (!$dry_run && !empty($comments_to_import) && !module_exists('comment')) {
+        module_enable(array('comment'));
+        backdrop_set_message(t('Enabled the Comment module (required for importing comments).'));
+      }
     }
     
     // First import taxonomy vocabularies and terms
@@ -454,6 +461,25 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
           if (isset($type_data['field_configs'])) {
             foreach ($type_data['field_configs'] as $field_name => $field_config) {
               if (!field_info_field($field_name)) {
+                // Enable the field's module if it is not already available.
+                if (!empty($field_config['module']) && !module_exists($field_config['module'])) {
+                  $enabled = module_enable(array($field_config['module']));
+                  if ($enabled) {
+                    // Clear field info caches so the new field type is available.
+                    field_cache_clear();
+                    backdrop_set_message(t('Enabled the %module module (required by field %field).', array(
+                      '%module' => $field_config['module'],
+                      '%field' => $field_name,
+                    )));
+                  }
+                  else {
+                    backdrop_set_message(t('Could not enable the %module module required by field %field. Skipping field.', array(
+                      '%module' => $field_config['module'],
+                      '%field' => $field_name,
+                    )), 'error');
+                    continue;
+                  }
+                }
                 field_create_field($field_config);
               }
             }
@@ -638,9 +664,11 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
       continue;
     }
 
-    // Validate that the content type exists
-    if (!isset($c['type']) || !node_type_get_type($c['type'])) {
-      backdrop_set_message(t('Skipping node: Content type @type does not exist.', array('@type' => isset($c['type']) ? $c['type'] : 'undefined')), 'error');
+    // Validate that the content type exists or would be created by this import.
+    $type_name = isset($c['type']) ? $c['type'] : '';
+    $type_would_be_created = isset($content_data['content_types'][$type_name]);
+    if (empty($type_name) || (!node_type_get_type($type_name) && !$type_would_be_created)) {
+      backdrop_set_message(t('Skipping node Test: Content type @type does not exist.', array('@type' => $type_name ? $type_name : 'undefined')), 'error');
       continue;
     }
 
@@ -660,6 +688,16 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
       }
     }
 
+    // During dry run, skip node building — just track for the report.
+    if ($dry_run) {
+      $report['nodes_to_import'][] = isset($c['title']) ? $c['title'] : '';
+      $node_count++;
+      if (isset($c['uuid'])) {
+        $uuid_to_nid[$c['uuid']] = 'dry_run';
+      }
+      continue;
+    }
+
     // Create a new node using the proper Node class
     $node = entity_create('node', array(
       'type' => $c['type'],
@@ -671,7 +709,7 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
         'alias' => isset($c['path']['alias']) ? $c['path']['alias'] : '',
       ),
     ));
-    
+
     // Get the content type settings
     $content_type = node_type_get_type($node->type);
     if (!$content_type) {
@@ -813,28 +851,19 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
     // Track this node as one that would be imported.
     $report['nodes_to_import'][] = isset($c['title']) ? $c['title'] : '';
 
-    if (!$dry_run) {
-      try {
+    try {
+      $node->save();
+      $node_count++;
+      // Update the UUID to NID mapping
+      if (isset($c['uuid'])) {
+        $uuid_to_nid[$c['uuid']] = $node->nid;
+        // Store the UUID in the field
+        $node->field_uuid[LANGUAGE_NONE][0]['value'] = $c['uuid'];
         $node->save();
-        $node_count++;
-        // Update the UUID to NID mapping
-        if (isset($c['uuid'])) {
-          $uuid_to_nid[$c['uuid']] = $node->nid;
-          // Store the UUID in the field
-          $node->field_uuid[LANGUAGE_NONE][0]['value'] = $c['uuid'];
-          $node->save();
-        }
-      }
-      catch (Exception $e) {
-        backdrop_set_message(t('Error saving node: @error', array('@error' => $e->getMessage())), 'error');
       }
     }
-    else {
-      $node_count++;
-      // Populate a placeholder so comment counting can reference this node.
-      if (isset($c['uuid'])) {
-        $uuid_to_nid[$c['uuid']] = 'dry_run';
-      }
+    catch (Exception $e) {
+      backdrop_set_message(t('Error saving node: @error', array('@error' => $e->getMessage())), 'error');
     }
   }
 
