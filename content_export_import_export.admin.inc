@@ -39,6 +39,14 @@ function content_export_import_export_settings($form, &$form_state) {
     '#required' => TRUE,
   );
   
+  $form['export']['include_comments'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Include comments'),
+    '#default_value' => 0,
+    '#description' => t('Export comments attached to the selected content.'),
+    '#access' => module_exists('comment'),
+  );
+
   $form['export']['submit'] = array(
     '#type' => 'submit',
     '#value' => t('Export Content'),
@@ -157,6 +165,9 @@ function content_export_import_export_settings_submit(array $form, array &$form_
       // Export comment settings for this content type (if comment module is enabled)
       if (module_exists('comment') && isset($content_type->settings) && is_array($content_type->settings)) {
         $comment_settings = array();
+        if (isset($content_type->settings['comment_enabled'])) {
+          $comment_settings['comment_enabled'] = $content_type->settings['comment_enabled'];
+        }
         if (isset($content_type->settings['comment_default'])) {
           $comment_settings['comment_default'] = $content_type->settings['comment_default'];
         }
@@ -201,9 +212,10 @@ function content_export_import_export_settings_submit(array $form, array &$form_
   
   $export_data['nodes'] = $nodes;
 
-  // Export comments for all nodes (if comment module is enabled)
+  // Export comments for all nodes (if requested and comment module is enabled)
   $export_data['comments'] = array();
-  if (module_exists('comment')) {
+  $include_comments = !empty($form_state['values']['include_comments']);
+  if ($include_comments && module_exists('comment')) {
     foreach ($nodes as $node) {
       // Load all comments for this node (including unpublished)
       $query = db_select('comment', 'c')
