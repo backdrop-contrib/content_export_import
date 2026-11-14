@@ -485,20 +485,6 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
             }
           }
 
-          // Add UUID field if it doesn't exist
-          if (!field_info_field('field_uuid')) {
-            $uuid_field = array(
-              'field_name' => 'field_uuid',
-              'type' => 'text',
-              'cardinality' => 1,
-              'locked' => TRUE,
-              'settings' => array(
-                'max_length' => 36,
-              ),
-            );
-            field_create_field($uuid_field);
-          }
-
           // Import field instances
           if (isset($type_data['field_instances'])) {
             foreach ($type_data['field_instances'] as $field_name => $instance) {
@@ -508,30 +494,8 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
             }
           }
 
-          // Add UUID field instance if it doesn't exist
-          if (!field_info_instance('node', 'field_uuid', $type)) {
-            $uuid_instance = array(
-              'field_name' => 'field_uuid',
-              'entity_type' => 'node',
-              'bundle' => $type,
-              'label' => 'UUID',
-              'description' => 'Unique identifier for this content',
-              'required' => FALSE,
-              'widget' => array(
-                'type' => 'text_textfield',
-                'settings' => array(
-                  'size' => 60,
-                ),
-              ),
-              'display' => array(
-                'default' => array(
-                  'label' => 'above',
-                  'type' => 'text_default',
-                ),
-              ),
-            );
-            field_create_instance($uuid_instance);
-          }
+          // Add the UUID field used to detect content that was already imported.
+          _content_export_import_ensure_uuid_field($type);
 
           // Ensure comment_body field is created for this content type (if comment module is enabled)
           // This is normally done by hook_node_type_insert(), but we need to do it manually
@@ -568,44 +532,8 @@ function content_export_import_import_settings_submit(&$form, &$form_state) {
         $report['types_existing'][] = isset($type_data['name']) ? $type_data['name'] : $type;
 
         if (!$dry_run) {
-          // Ensure field_uuid field exists.
-          if (!field_info_field('field_uuid')) {
-            $uuid_field = array(
-              'field_name' => 'field_uuid',
-              'type' => 'text',
-              'cardinality' => 1,
-              'locked' => TRUE,
-              'settings' => array(
-                'max_length' => 36,
-              ),
-            );
-            field_create_field($uuid_field);
-          }
-
-          // Ensure field_uuid instance exists for this content type.
-          if (!field_info_instance('node', 'field_uuid', $type)) {
-            $uuid_instance = array(
-              'field_name' => 'field_uuid',
-              'entity_type' => 'node',
-              'bundle' => $type,
-              'label' => 'UUID',
-              'description' => 'Unique identifier for this content',
-              'required' => FALSE,
-              'widget' => array(
-                'type' => 'text_textfield',
-                'settings' => array(
-                  'size' => 60,
-                ),
-              ),
-              'display' => array(
-                'default' => array(
-                  'label' => 'above',
-                  'type' => 'text_default',
-                ),
-              ),
-            );
-            field_create_instance($uuid_instance);
-          }
+          // Add the UUID field used to detect content that was already imported.
+          _content_export_import_ensure_uuid_field($type);
 
           if (module_exists('comment')) {
             $content_type = node_type_get_type($type);
@@ -1209,4 +1137,56 @@ function content_export_import_entity_exists_by_uuid($entity_type, $uuid) {
         ->fieldCondition('field_uuid', 'value', $uuid);
   $result = $query->execute();
   return !empty($result[$entity_type]);
+}
+
+/**
+ * Ensures the UUID field exists and is attached to a content type.
+ *
+ * Imported nodes store their original UUID in this field so that importing
+ * the same file again skips content that already exists. The field is not
+ * locked, so it can be removed once it is no longer needed, and it is hidden
+ * on display.
+ *
+ * @param string $type
+ *   The machine name of the content type.
+ */
+function _content_export_import_ensure_uuid_field($type) {
+  if (!field_info_field('field_uuid')) {
+    field_create_field(array(
+      'field_name' => 'field_uuid',
+      'type' => 'text',
+      'cardinality' => 1,
+      'locked' => FALSE,
+      'settings' => array(
+        'max_length' => 36,
+      ),
+    ));
+  }
+
+  if (!field_info_instance('node', 'field_uuid', $type)) {
+    field_create_instance(array(
+      'field_name' => 'field_uuid',
+      'entity_type' => 'node',
+      'bundle' => $type,
+      'label' => 'UUID',
+      'description' => 'Used by Content Export Import to avoid importing the same content twice. Leave this value unchanged.',
+      'required' => FALSE,
+      'widget' => array(
+        'type' => 'text_textfield',
+        'settings' => array(
+          'size' => 60,
+        ),
+      ),
+      'display' => array(
+        'default' => array(
+          'label' => 'hidden',
+          'type' => 'hidden',
+        ),
+        'teaser' => array(
+          'label' => 'hidden',
+          'type' => 'hidden',
+        ),
+      ),
+    ));
+  }
 }

@@ -1,0 +1,50 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for Content Export Import.
+ */
+
+/**
+ * Implements hook_uninstall().
+ *
+ * The UUID field and its values are left in place, because they are part of
+ * the site's content. The field is unlocked so that it can be deleted from
+ * the content types if it is no longer needed.
+ */
+function content_export_import_uninstall() {
+  _content_export_import_unlock_uuid_field();
+}
+
+/**
+ * Unlock the UUID field added by imports, so it can be removed from content types.
+ */
+function content_export_import_update_1100() {
+  if (_content_export_import_unlock_uuid_field()) {
+    return t('The UUID field (field_uuid) is now unlocked and can be removed from content types if it is no longer needed.');
+  }
+}
+
+/**
+ * Unlocks the field_uuid field created by earlier imports.
+ *
+ * Only a field that matches what this module creates (a text field with a
+ * maximum length of 36) is changed.
+ *
+ * @return bool
+ *   TRUE if the field was unlocked, FALSE if there was nothing to do.
+ */
+function _content_export_import_unlock_uuid_field() {
+  $field = field_read_field('field_uuid', array('include_inactive' => TRUE));
+  if (empty($field) || empty($field['locked']) || $field['type'] != 'text') {
+    return FALSE;
+  }
+  if (!isset($field['settings']['max_length']) || $field['settings']['max_length'] != 36) {
+    return FALSE;
+  }
+  field_update_field(array(
+    'field_name' => 'field_uuid',
+    'locked' => FALSE,
+  ));
+  return TRUE;
+}
